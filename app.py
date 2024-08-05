@@ -1,10 +1,7 @@
 import time
 from google.cloud import bigquery
 import streamlit as st
-import pandas as pd
-import json
 from vertexai.generative_models import FunctionDeclaration, GenerativeModel, Part, Tool
-from google.api_core.exceptions import GoogleAPICallError
 
 BIGQUERY_DATASET_ID = "Sample_Fin_Dataset"
 
@@ -85,66 +82,60 @@ model = GenerativeModel(
 
 st.set_page_config(
     page_title="SQL Talk with BigQuery",
-    page_icon="vertex-ai.png",
+    page_icon="brio.png",
     layout="wide",
 )
 
-# Define columns
-col1, col2 = st.columns([1, 2])
+st.image("brio.png", width=100)
 
+st.title("Finance Q&A Using Enterprise Search")
+
+# Divide the page into two columns
+col1, col2 = st.columns([0.4, 0.6])
+
+# Left column for prompts
 with col1:
-    st.title("Prompts")
-
-    if "prompts" not in st.session_state:
-        st.session_state.prompts = []
-
-    if prompt := st.text_input("Enter your prompt"):
-        st.session_state.prompts.append(prompt)
-        with open("prompts.txt", "a") as f:
-            f.write(f"{prompt}\n")
-
-    st.subheader("Session Prompts")
-    for p in st.session_state.prompts:
-        st.write(p)
-
-with col2:
-    st.title("Responses")
-    st.subheader("Powered by Function Calling in Gemini")
-
+    st.header("Prompt")
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"].replace("$", "\$"))  # noqa: W605
-            try:
-                with st.expander("Function calls, parameters, and responses"):
-                    st.markdown(message["backend_details"])
-            except KeyError:
-                pass
-
-    if st.session_state.prompts:
-        prompt = st.session_state.prompts[-1]
+    if prompt := st.chat_input("Ask me about information in the database..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            full_response = ""
-            chat = model.start_chat()
-            client = bigquery.Client()
+        # Save prompt to prompts.txt
+        with open("prompts.txt", "a") as f:
+            f.write(prompt + "\n")
 
-            prompt += """
-                Please give a concise, high-level summary followed by detail in
-                plain language about where the information in your response is
-                coming from in the database. Only use information that you learn
-                from BigQuery, do not make up information.
-                """
+    st.subheader("Session Prompts")
+    for message in st.session_state.messages:
+        if message["role"] == "user":
+            st.markdown(message["content"].replace("$", "\$"))  # noqa: W605
 
-            try:
+# Right column for responses
+with col2:
+    st.header("Response")
+    if "messages" in st.session_state and len(st.session_state.messages) > 0:
+        last_message = st.session_state.messages[-1]
+        if last_message["role"] == "user":
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                full_response = ""
+                chat = model.start_chat()
+                client = bigquery.Client()
+
+                prompt = last_message["content"] + """
+                    Please give a concise, high-level summary followed by detail in
+                    plain language about where the information in your response is
+                    coming from in the database. Only use information that you learn
+                    from BigQuery, do not make up information.
+                    """
+
                 response = chat.send_message(prompt)
                 response = response.candidates[0].content.parts[0]
+
+                print(response)
 
                 api_requests_and_responses = []
                 backend_details = ""
@@ -155,6 +146,9 @@ with col2:
                         params = {}
                         for key, value in response.function_call.args.items():
                             params[key] = value
+
+                        print(response.function_call.name)
+                        print(params)
 
                         if response.function_call.name == "list_datasets":
                             api_response = client.list_datasets()
@@ -203,10 +197,10 @@ with col2:
                                 )
                                 query_job = client.query(cleaned_query, job_config=job_config)
                                 api_response = query_job.result()
-                                api_response = [dict(row) for row in api_response]
-                                api_response_str = str(api_response).replace("\\", "").replace("\n", "")
+                                api_response = str([dict(row) for row in api_response])
+                                api_response = api_response.replace("\\", "").replace("\n", "")
                                 api_requests_and_responses.append(
-                                    [response.function_call.name, params, api_response_str]
+                                    [response.function_call.name, params, api_response]
                                 )
                             except Exception as e:
                                 api_response = f"{str(e)}"
@@ -214,11 +208,13 @@ with col2:
                                     [response.function_call.name, params, api_response]
                                 )
 
+                        print(api_response)
+
                         response = chat.send_message(
                             Part.from_function_response(
                                 name=response.function_call.name,
                                 response={
-                                    "content": str(api_response),
+                                    "content": api_response,
                                 },
                             ),
                         )
@@ -249,6 +245,8 @@ with col2:
                     except AttributeError:
                         function_calling_in_process = False
 
+                time.sleep(3)
+
                 full_response = response.text
                 with message_placeholder.container():
                     st.markdown(full_response.replace("$", "\$"))  # noqa: W605
@@ -262,26 +260,3 @@ with col2:
                         "backend_details": backend_details,
                     }
                 )
-
-                # Display response as text
-                st.write("### Text Response")
-                st.write(full_response)
-
-                # Display response as table if it's a valid JSON
-                try:
-                    df = pd.DataFrame(api_response)
-                    st.write("### Table Response")
-                    st.dataframe(df)
-                except ValueError:
-                    st.write("No tabular data to display.")
-
-                # Display response as graphs
-                if not df.empty:
-                    st.write("### Graphs")
-                    st.line_chart(df)
-                    st.bar_chart(df)
-
-            except GoogleAPICallError as e:
-                st.error(f"API call error: {e}")
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
