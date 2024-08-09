@@ -4,7 +4,7 @@ import datetime  # Added import for datetime
 from google.cloud import bigquery
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px  # Changed import for plotting
 from vertexai.generative_models import FunctionDeclaration, GenerativeModel, Part, Tool
 
 BIGQUERY_DATASET_ID = "Sample_Fin_Dataset"
@@ -12,7 +12,7 @@ BIGQUERY_DATASET_ID = "Sample_Fin_Dataset"
 list_datasets_func = FunctionDeclaration(
     name="list_datasets",
     description="Get a list of datasets that will help answer the user's question",
-    parameters={ "type": "object", "properties": {} },
+    parameters={"type": "object", "properties": {}},
 )
 
 list_tables_func = FunctionDeclaration(
@@ -20,7 +20,7 @@ list_tables_func = FunctionDeclaration(
     description="List tables in a dataset that will help answer the user's question",
     parameters={
         "type": "object",
-        "properties": { "dataset_id": { "type": "string", "description": "Dataset ID to fetch tables from." }},
+        "properties": {"dataset_id": {"type": "string", "description": "Dataset ID to fetch tables from."}},
         "required": ["dataset_id"],
     },
 )
@@ -30,7 +30,7 @@ get_table_func = FunctionDeclaration(
     description="Get information about a table, including the description, schema, and number of rows that will help answer the user's question. Always use the fully qualified dataset and table names.",
     parameters={
         "type": "object",
-        "properties": { "table_id": { "type": "string", "description": "Fully qualified ID of the table to get information about" }},
+        "properties": {"table_id": {"type": "string", "description": "Fully qualified ID of the table to get information about"}},
         "required": ["table_id"],
     },
 )
@@ -40,18 +40,18 @@ sql_query_func = FunctionDeclaration(
     description="Get information from data in BigQuery using SQL queries",
     parameters={
         "type": "object",
-        "properties": { "query": { "type": "string", "description": "SQL query on a single line that will help give quantitative answers to the user's question when run on a BigQuery dataset and table. In the SQL query, always use the fully qualified dataset and table names." }},
+        "properties": {"query": {"type": "string", "description": "SQL query on a single line that will help give quantitative answers to the user's question when run on a BigQuery dataset and table. In the SQL query, always use the fully qualified dataset and table names."}},
         "required": ["query"],
     },
 )
 
 sql_query_tool = Tool(
-    function_declarations=[ list_datasets_func, list_tables_func, get_table_func, sql_query_func ],
+    function_declarations=[list_datasets_func, list_tables_func, get_table_func, sql_query_func],
 )
 
 model = GenerativeModel(
     "gemini-1.5-pro-001",
-    generation_config={"temperature": 1},
+    generation_config={"temperature": 2},
     tools=[sql_query_tool],
 )
 
@@ -104,7 +104,7 @@ with col2:
                     Please give a concise, high-level summary followed by detail in
                     plain language about where the information in your response is
                     coming from in the database. Only use information that you learn
-                    from BigQuery, do not make up information.
+                    from BigQuery, do not make up information. 
                     """
                 try:
                     response = chat.send_message(prompt)
@@ -194,8 +194,8 @@ with col2:
                                     },
                                 ),
                             )
+                            print(response)
                             response = response.candidates[0].content.parts[0]
-
                             backend_details += "- Function call:\n"
                             backend_details += (
                                 "   - Function name: ```"
@@ -217,6 +217,7 @@ with col2:
                             backend_details += "\n\n"
                             with message_placeholder.container():
                                 st.markdown(backend_details)
+                            
 
                         except AttributeError:
                             function_calling_in_process = False
@@ -224,10 +225,24 @@ with col2:
                     time.sleep(3)
 
                     full_response = response.text
+
+                    #Added for identifying if the response is positive or negative in nature
+                    prompt_sentiment = full_response + """
+                    Please provide a concise and clear information if the prompt text is 
+                    positive or negative in nature considering the natural lanuguage words 
+                    in the text. Provide the response as positive or negative.
+                    """
+                    response_sentiment = chat.send_message(prompt_sentiment)
+                    sentiment = (response_sentiment.candidates[0].content.parts[0].text).lower()
+                    sentiment = sentiment.strip()
+                    print(sentiment)
+                    #End of block
+
                     with message_placeholder.container():
                         st.markdown(full_response.replace("$", "\$"))
-                        with st.expander("Function calls, parameters, and responses:"):
-                            st.markdown(backend_details)
+                        # Commenting out the Function calls, parameters, and responses section on output screen
+                        #with st.expander("Function calls, parameters, and responses:"):
+                            #st.markdown(backend_details)
 
                     st.session_state.messages.append(
                         {
@@ -250,22 +265,15 @@ with col2:
                             # Display response as pie chart if there are two columns
                             elif len(df.columns) == 2:
                                 st.write("### Pie Chart")
-                                fig, ax = plt.subplots()
-                                df.set_index(df.columns[0]).plot.pie(y=df.columns[1], figsize=(5, 5), autopct='%1.1f%%', ax=ax)
-                                ax.legend(
-                                    loc='upper right',
-                                    bbox_to_anchor=(1.3, 1.15),
-                                    fontsize='xx-small',
-                                    title='Legend',
-                                    ncol=2,
-                                    markerscale=0.5
-                                )
-                                st.pyplot(fig)
+                                fig = px.pie(df, names=df.columns[0], values=df.columns[1], title="Pie Chart")
+                                st.plotly_chart(fig)
 
                             # Display response as bar chart if there are three or more columns
-                            else:
+                            elif (sentiment != "negative"):
+                                print("Inside condition -->" + sentiment)
                                 st.write("### Bar Chart")
-                                st.bar_chart(df.set_index(df.columns[0]))
+                                fig = px.bar(df, x=df.columns[0], y=df.columns[1:], title="Bar Chart")
+                                st.plotly_chart(fig)
 
                         except Exception as e:
                             st.error(f"Error converting response to DataFrame or plotting: {e}")
